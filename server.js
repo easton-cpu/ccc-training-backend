@@ -1,3 +1,4 @@
+// SAME IMPORTS
 import express from "express";
 import cors from "cors";
 import multer from "multer";
@@ -9,6 +10,7 @@ dotenv.config();
 
 const app = express();
 const upload = multer({ dest: "uploads/" });
+const audioUpload = multer({ dest: "audio_uploads/" });
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
@@ -18,92 +20,135 @@ app.use(cors());
 app.use(express.json());
 
 /* ===============================
-   SYSTEM PROMPT (SALES TRAINER)
+   ROLEPLAY FLOW (APPOINTMENT)
 ================================ */
-const SALES_TRAINER_PROMPT = `
-You are CCC AI, a roofing sales trainer for Connolly Construction Company.
 
-CRITICAL RULES:
+const ROLEPLAY_STEPS = [
+  "opening",
+  "inspection",
+  "presentation",
+  "price objection",
+  "closing"
+];
 
-1. ALWAYS give SHORT, DIRECT, SCRIPT-BASED answers.
-2. NEVER write long paragraphs unless asked.
-3. ALWAYS tell the rep EXACTLY what to say.
-
-FORMAT:
-Step 1:
-Say: "..."
-
-Step 2:
-Say: "..."
-
-4. Speak like a top 1% roofing closer.
-5. Use confident, controlled language.
-6. Use CCC language: "At CCC, we..."
-
-7. Use uploaded training documents FIRST.
-8. Do NOT give generic advice.
-9. Turn answers into scripts.
-
-Goal:
-Make reps able to say it in a real home.
-`;
+const sessions = {}; // simple in-memory tracking
 
 /* ===============================
-   ROOT
+   START ROLEPLAY SESSION
 ================================ */
-app.get("/", (req, res) => {
-  res.json({ status: "CCC Learning Library backend is running." });
+
+app.post("/start-full-roleplay", (req, res) => {
+  const sessionId = Date.now().toString();
+
+  sessions[sessionId] = {
+    stepIndex: 0,
+    totalScore: 0,
+    history: []
+  };
+
+  res.json({
+    sessionId,
+    step: ROLEPLAY_STEPS[0],
+    message: "Homeowner: So what are you seeing with the roof so far?"
+  });
 });
 
 /* ===============================
-   UPLOAD TEST PAGE
+   VOICE RESPONSE + SCORING
 ================================ */
-app.get("/upload-test", (req, res) => {
-  res.send(`
-    <h2>CCC Upload Test</h2>
-    <form action="/upload" method="post" enctype="multipart/form-data">
-      <input type="text" name="title" placeholder="Document Title" /><br/><br/>
 
-      <select name="category">
-        <option value="sales">Sales</option>
-        <option value="marketing">Marketing</option>
-        <option value="production">Production</option>
-        <option value="admin">Admin</option>
-      </select><br/><br/>
-
-      <input type="file" name="file" /><br/><br/>
-
-      <button type="submit">Upload Into CCC Brain</button>
-    </form>
-  `);
-});
-
-/* ===============================
-   UPLOAD + INDEX FILE
-================================ */
-app.post("/upload", upload.single("file"), async (req, res) => {
+app.post("/submit-roleplay-audio", audioUpload.single("audio"), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded." });
+    const { sessionId } = req.body;
+    const session = sessions[sessionId];
+
+    if (!session) {
+      return res.status(400).json({ error: "Invalid session" });
     }
 
-    const uploadedFile = await openai.files.create({
+    const currentStep = ROLEPLAY_STEPS[session.stepIndex];
+
+    // TRANSCRIBE AUDIO
+    const transcription = await openai.audio.transcriptions.create({
       file: fs.createReadStream(req.file.path),
-      purpose: "assistants"
+      model: "gpt-4o-mini-transcribe"
     });
 
-    // WAIT until indexing completes
-    await openai.vectorStores.files.createAndPoll(process.env.VECTOR_STORE_ID, {
-      file_id: uploadedFile.id
+    const transcript = transcription.text;
+
+    // SCORE RESPONSE
+    const scoreResponse = await openai.responses.create({
+      model: "gpt-4.1-mini",
+      input: `
+You are CCC AI, a roofing sales manager scoring a rep.
+
+Step: ${currentStep}
+
+Rep said:
+"${transcript}"
+
+Score from 0–20.
+
+Return:
+Score: X/20
+Feedback: short coaching
+`
     });
+
+    const scoreText = scoreResponse.output_text;
+
+    const match = scoreText.match(/Score:\s*(\d+)/);
+    const stepScore = match ? parseInt(match[1]) : 10;
+
+    session.totalScore += stepScore;
+
+    session.history.push({
+      step: currentStep,
+      transcript,
+      score: stepScore
+    });
+
+    session.stepIndex++;
 
     fs.unlinkSync(req.file.path);
 
-    res.json({
-      success: true,
-      message: "File uploaded, indexed, and ready for CCC AI.",
-      file_id: uploadedFile.id
+    // END CONDITION
+    if (session.stepIndex >= ROLEPLAY_STEPS.length) {
+      const finalScore = session.totalScore;
+
+      return res.json({
+        done: true,
+        finalScore,
+        pass: finalScore >= 80,
+        message: finalScore >= 80
+          ? "PASS — Ready to run appointments"
+          : "FAIL — Needs more training"
+      });
+    }
+
+    // NEXT STEP PROMPT
+    const nextStep = ROLEPLAY_STEPS[session.stepIndex];
+
+    const nextPrompt = await openai.responses.create({
+      model: "gpt-4.1-mini",
+      input: `
+You are a homeowner.
+
+Next step: ${nextStep}
+
+Give a realistic objection or response.
+Keep it short.
+`
     });
+
+    res.json({
+      done: false,
+      transcript,
+      stepScore,
+      totalScore: session.totalScore,
+      nextMessage: nextPrompt.output_text
+    });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -111,149 +156,13 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 });
 
 /* ===============================
-   ASK PAGE (BROWSER TEST)
+   BASIC SERVER
 ================================ */
-app.get("/ask-page", (req, res) => {
-  res.send(`
-    <h2>Ask CCC AI</h2>
-    <form action="/ask-browser" method="get">
-      <input name="question" style="width:500px;" placeholder="Ask a question..." />
-      <button type="submit">Ask</button>
-    </form>
-  `);
+
+app.get("/", (req, res) => {
+  res.json({ status: "CCC server running" });
 });
 
-/* ===============================
-   ASK (BROWSER)
-================================ */
-app.get("/ask-browser", async (req, res) => {
-  try {
-    const question = req.query.question;
-
-    const response = await openai.responses.create({
-      model: "gpt-4.1-mini",
-      input: [
-        { role: "system", content: SALES_TRAINER_PROMPT },
-        { role: "user", content: question }
-      ],
-      tools: [
-        {
-          type: "file_search",
-          vector_store_ids: [process.env.VECTOR_STORE_ID]
-        }
-      ]
-    });
-
-    res.send(`
-      <h2>Question:</h2>
-      <p>${question}</p>
-      <h2>CCC AI Answer:</h2>
-      <pre>${response.output_text}</pre>
-      <a href="/ask-page">Ask another</a>
-    `);
-
-  } catch (err) {
-    res.send(err.message);
-  }
-});
-
-/* ===============================
-   ASK (API)
-================================ */
-app.post("/ask", async (req, res) => {
-  try {
-    const response = await openai.responses.create({
-      model: "gpt-4.1-mini",
-      input: [
-        { role: "system", content: SALES_TRAINER_PROMPT },
-        { role: "user", content: req.body.question }
-      ],
-      tools: [
-        {
-          type: "file_search",
-          vector_store_ids: [process.env.VECTOR_STORE_ID]
-        }
-      ]
-    });
-
-    res.json({ answer: response.output_text });
-
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ===============================
-   ROLEPLAY + SCORING
-================================ */
-app.post("/roleplay", async (req, res) => {
-  try {
-    const { scenario, repResponse } = req.body;
-
-    // Start roleplay (AI homeowner)
-    if (!repResponse) {
-      const start = await openai.responses.create({
-        model: "gpt-4.1-mini",
-        input: `
-You are a homeowner in a roofing sales appointment.
-
-Scenario: ${scenario || "price objection"}
-
-You are skeptical, realistic, and resistant.
-
-Respond with ONE objection in 1-2 sentences.
-`
-      });
-
-      return res.json({ reply: start.output_text });
-    }
-
-    // Score rep
-    const score = await openai.responses.create({
-      model: "gpt-4.1-mini",
-      input: `
-You are CCC AI, a high-level roofing sales manager.
-
-Scenario: ${scenario}
-
-Rep said:
-"${repResponse}"
-
-Score 1-10 on:
-- Control
-- Confidence
-- Objection handling
-- Value framing
-- Closing attempt
-
-Return:
-
-Score: X/10
-
-What they did well:
-- ...
-
-What they missed:
-- ...
-
-Better response:
-Say: "..."
-
-Manager note:
-...
-`
-    });
-
-    res.json({ feedback: score.output_text });
-
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ===============================
-   START SERVER
-================================ */
 app.listen(3000, () => {
   console.log("🚀 CCC server running on http://localhost:3000");
 });
