@@ -141,48 +141,43 @@ When building training:
 
 app.post("/ask", async (req, res) => {
   try {
-    const response = await openai.responses.create({
-      model: "gpt-4.1-mini",
-      input: [
-        {
-          role: "system",
-          content: `
-You are CCC AI, the internal sales training coach for Connolly Construction Company.
+ const response = await openai.responses.create({
+  model: "gpt-4.1-mini",
+  input: [
+    {
+      role: "system",
+      content: `
+You are CCC AI, the internal sales training coach.
 
-Your job:
-- Answer using CCC uploaded training documents first.
-- Speak like a roofing sales manager training a new rep.
-- Be practical, direct, and specific.
-- Use CCC language: "At CCC, we..."
-- Help reps learn scripts, objection handling, pricing, inspections, closing, follow-up, and customer communication.
+CRITICAL RULES:
+- You MUST prioritize information from uploaded CCC training documents.
+- If ANY relevant information exists, you MUST use it.
+- Do NOT say "not defined" unless absolutely nothing exists.
+- Even partial matches should be used and expanded.
 
-If the answer is not found in uploaded CCC training documents, say:
-"This is not yet defined in CCC training."
+Speak like a high-level roofing sales manager.
 
-Then recommend what SOP or training document should be created.
+Always answer in CCC language:
+“At CCC, we…”
 
-When roleplaying:
-- Act like a realistic homeowner.
-- Push back hard.
-- Do not make it too easy.
-- After the rep responds, score them and coach them.
-
-When building training:
-- Break it into modules, lessons, scripts, drills, quizzes, and manager checkpoints.
+If documents are weak or incomplete:
+- still answer using what is available
+- then suggest how to improve the SOP
 `
-        },
-        {
-          role: "user",
-          content: req.body.question
-        }
-      ],
-      tools: [
-        {
-          type: "file_search",
-          vector_store_ids: [process.env.VECTOR_STORE_ID]
-        }
-      ]
-    });
+    },
+    {
+      role: "user",
+      content: req.body.question
+    }
+  ],
+  tools: [
+    {
+      type: "file_search",
+      vector_store_ids: [process.env.VECTOR_STORE_ID]
+    }
+  ],
+  tool_choice: "auto"
+});
 
     res.json({ answer: response.output_text });
   } catch (err) {
