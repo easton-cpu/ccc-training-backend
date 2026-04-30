@@ -52,7 +52,8 @@ app.post("/upload", upload.single("file"), async (req, res) => {
       purpose: "assistants"
     });
 
-    await openai.vectorStores.files.create(process.env.VECTOR_STORE_ID, {
+    // 🔥 THIS IS THE KEY FIX
+    await openai.vectorStores.files.createAndPoll(process.env.VECTOR_STORE_ID, {
       file_id: uploadedFile.id
     });
 
@@ -60,7 +61,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 
     res.json({
       success: true,
-      message: "File uploaded into CCC AI brain.",
+      message: "File uploaded, indexed, and ready for CCC AI.",
       file_id: uploadedFile.id
     });
   } catch (err) {
